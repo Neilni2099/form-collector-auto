@@ -1,0 +1,88 @@
+name: 自动清理表单提交
+
+on:
+  schedule:
+    # 每6小时运行一次
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    
+    steps:
+      - name: 清理24小时前的Issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            
+            // 获取标记为auto-delete的开放Issues
+            const issues = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              labels: 'auto-delete'
+            });
+            
+            console.log(`找到 ${issues.data.length} 个待清理的Issues`);
+            
+            const now = new Date();
+            const cutoffTime = new Date(now.getTime() - 24 * 60 * 60 * 1000); // 24小时前
+            
+            let cleanedCount = 0;
+            
+            for (const issue of issues.data) {
+              const createdAt = new Date(issue.created_at);
+              
+              if (createdAt < cutoffTime) {
+                try {
+                  // 关闭Issue
+                  await github.rest.issues.update({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    state: 'closed'
+                  });
+                  
+                  // 添加清理注释
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    body: `
+            🧹 **自动清理完成**
+            
+            此Issue已根据24小时自动清理规则被关闭。
+            
+            - **创建时间：** ${issue.created_at}
+            - **清理时间：** ${now.toISOString()}
+            - **清理原因：** 超过24小时保留期限
+            
+            如需重新提交，请使用表单页面重新填写信息。
+                    `.trim()
+                  });
+                  
+                  console.log(`已清理Issue #${issue.number}`);
+                  cleanedCount++;
+                  
+                } catch (error) {
+                  console.error(`清理Issue #${issue.number}失败:`, error.message);
+                }
+              }
+            }
+            
+            console.log(`本次共清理 ${cleanedCount} 个Issues`);
+            
+            // 设置输出变量
+            core.setOutput('cleaned-count', cleanedCount);
+            core.setOutput('total-issues', issues.data.length);
+
+      - name: 输出清理统计
+        run: |
+          echo "✅ 自动清理完成"
+          echo "清理数量: ${{ steps.cleanup.outputs.cleaned-count }}"
+          echo "总Issues: ${{ steps.cleanup.outputs.total-issues }}"
